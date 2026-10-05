@@ -1,5 +1,7 @@
 // Package calculator implements the arithmetic domain logic.
 //
+// All arithmetic is decimal, not binary floating point: see Number.
+//
 // It has no knowledge of HTTP or JSON so it can be tested and reused in
 // isolation; transport concerns live in the api package.
 package calculator
@@ -7,7 +9,8 @@ package calculator
 import (
 	"errors"
 	"fmt"
-	"math"
+
+	"github.com/cockroachdb/apd/v3"
 )
 
 // Operation identifies an arithmetic operation supported by the calculator.
@@ -27,7 +30,7 @@ const (
 // errors.Is, since they may be wrapped with additional context.
 var (
 	ErrUnknownOperation = errors.New("unknown operation")
-	ErrInvalidOperand   = errors.New("operands must be finite numbers")
+	ErrInvalidOperand   = fmt.Errorf("operands must be decimal numbers with at most %d significant digits", Precision)
 	ErrDivisionByZero   = errors.New("division by zero")
 	ErrNegativeSqrt     = errors.New("square root of a negative number")
 	ErrUndefinedResult  = errors.New("result is not a real number")
@@ -41,58 +44,34 @@ type Info struct {
 	Description string    `json:"description"`
 }
 
+// operator is an apd operation that stores its result in d.
+type operator func(d, a, b *apd.Decimal) (apd.Condition, error)
+
 type definition struct {
 	info Info
-	eval func(a, b float64) (float64, error)
+	eval operator
 }
+
+var hundred = apd.New(100, 0)
 
 // definitions is the single source of truth for supported operations. Adding
 // an operation means adding one entry here; validation, listing and the HTTP
 // layer pick it up automatically.
 var definitions = []definition{
-	{
-		info: Info{Add, 2, "a + b"},
-		eval: func(a, b float64) (float64, error) { return a + b, nil },
-	},
-	{
-		info: Info{Subtract, 2, "a - b"},
-		eval: func(a, b float64) (float64, error) { return a - b, nil },
-	},
-	{
-		info: Info{Multiply, 2, "a * b"},
-		eval: func(a, b float64) (float64, error) { return a * b, nil },
-	},
-	{
-		info: Info{Divide, 2, "a / b"},
-		eval: func(a, b float64) (float64, error) {
-			if b == 0 {
-				return 0, ErrDivisionByZero
-			}
-			return a / b, nil
-		},
-	},
-	{
-		info: Info{Power, 2, "a raised to the power of b"},
-		eval: func(a, b float64) (float64, error) {
-			if a == 0 && b < 0 {
-				return 0, ErrDivisionByZero
-			}
-			return math.Pow(a, b), nil
-		},
-	},
-	{
-		info: Info{Sqrt, 1, "square root of a"},
-		eval: func(a, _ float64) (float64, error) {
-			if a < 0 {
-				return 0, ErrNegativeSqrt
-			}
-			return math.Sqrt(a), nil
-		},
-	},
-	{
-		info: Info{Percentage, 2, "a percent of b"},
-		eval: func(a, b float64) (float64, error) { return a / 100 * b, nil },
-	},
+	{Info{Add, 2, "a + b"}, arithmetic.Add},
+	{Info{Subtract, 2, "a - b"}, arithmetic.Sub},
+	{Info{Multiply, 2, "a * b"}, arithmetic.Mul},
+	{Info{Divide, 2, "a / b"}, arithmetic.Quo},
+	{Info{Power, 2, "a raised to the power of b"}, arithmetic.Pow},
+	{Info{Sqrt, 1, "square root of a"}, func(d, a, _ *apd.Decimal) (apd.Condition, error) {
+		return arithmetic.Sqrt(d, a)
+	}},
+	{Info{Percentage, 2, "a percent of b"}, func(d, a, b *apd.Decimal) (apd.Condition, error) {
+		if cond, err := arithmetic.Mul(d, a, b); err != nil {
+			return cond, err
+		}
+		return arithmetic.Quo(d, d, hundred)
+	}},
 }
 
 var byName = func() map[Operation]definition {
@@ -120,30 +99,32 @@ func Lookup(op Operation) (Info, bool) {
 
 // Calculate applies op to its operands. Unary operations ignore b.
 //
-// Results that cannot be represented as a finite real number are reported as
-// errors rather than as NaN or ±Inf, so callers never have to check for them.
-func Calculate(op Operation, a, b float64) (float64, error) {
+// Results are rounded to Precision significant digits. A calculation that has
+// no finite real result is reported as an error, so callers never receive a
+// NaN or an infinity.
+func Calculate(op Operation, a, b Number) (Number, error) {
 	d, ok := byName[op]
 	if !ok {
-		return 0, fmt.Errorf("%w: %q", ErrUnknownOperation, op)
-	}
-	if !isFinite(a) || (d.info.Operands > 1 && !isFinite(b)) {
-		return 0, ErrInvalidOperand
+		return Number{}, fmt.Errorf("%w: %q", ErrUnknownOperation, op)
 	}
 
-	result, err := d.eval(a, b)
-	if err != nil {
-		return 0, err
-	}
+	// Checked up front so each case gets a precise error instead of the
+	// library's generic "invalid operation".
 	switch {
-	case math.IsNaN(result):
-		return 0, ErrUndefinedResult
-	case math.IsInf(result, 0):
-		return 0, ErrOutOfRange
+	case op == Divide && b.IsZero(),
+		op == Power && a.IsZero() && b.IsNegative():
+		return Number{}, ErrDivisionByZero
+	case op == Sqrt && a.IsNegative():
+		return Number{}, ErrNegativeSqrt
 	}
-	return result, nil
-}
 
-func isFinite(f float64) bool {
-	return !math.IsNaN(f) && !math.IsInf(f, 0)
+	result := new(apd.Decimal)
+	cond, err := d.eval(result, a.decimal(), b.decimal())
+	switch {
+	case cond.Overflow() || cond.Underflow() || cond.SystemOverflow() || cond.SystemUnderflow():
+		return Number{}, ErrOutOfRange
+	case err != nil || result.Form != apd.Finite:
+		return Number{}, ErrUndefinedResult
+	}
+	return Number{d: result}, nil
 }
