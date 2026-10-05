@@ -29,9 +29,18 @@ func newTestRouter() http.Handler {
 	return newRouterWith(memory.New(100), "")
 }
 
+// do sends a request the way a well-behaved client would: bodies are JSON.
 func do(t *testing.T, h http.Handler, method, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
+	return doWithContentType(t, h, method, path, body, "application/json")
+}
+
+func doWithContentType(t *testing.T, h http.Handler, method, path, body, contentType string) *httptest.ResponseRecorder {
+	t.Helper()
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	return rec
@@ -88,7 +97,11 @@ func TestCreateCalculation(t *testing.T) {
 		{"power", `{"operation":"power","a":"2","b":"8"}`, `{"id":1,"operation":"power","a":"2","b":"8","result":"256"`},
 		{"percentage", `{"operation":"percentage","a":"20","b":"150"}`, `{"id":1,"operation":"percentage","a":"20","b":"150","result":"30"`},
 		{"sqrt", `{"operation":"sqrt","a":"81"}`, `{"id":1,"operation":"sqrt","a":"81","result":"9"`},
-		{"sqrt ignores b", `{"operation":"sqrt","a":"81","b":"not a number"}`, `{"id":1,"operation":"sqrt","a":"81","result":"9"`},
+		{"null b on a unary operation", `{"operation":"sqrt","a":"81","b":null}`, `{"id":1,"operation":"sqrt","a":"81","result":"9"`},
+		{"fields in any order, with whitespace", " {\n\t\"b\": \"3\", \"a\": \"2\", \"operation\": \"add\" }\n", `{"id":1,"operation":"add","a":"2","b":"3","result":"5"`},
+		{"trailing zeros are not significant digits", `{"operation":"add","a":"1.` + strings.Repeat("0", 50) + `","b":"1"}`, `{"id":1,"operation":"add","a":"1","b":"1","result":"2"`},
+		{"negative zero", `{"operation":"add","a":"-0","b":"0"}`, `{"id":1,"operation":"add","a":"0","b":"0","result":"0"`},
+		{"largest operand", `{"operation":"percentage","a":"1E+6144","b":"10"}`, `{"id":1,"operation":"percentage","a":"1E+6144","b":"10","result":"1E+6143"`},
 		{"explicit zero operands", `{"operation":"add","a":"0","b":"0"}`, `{"id":1,"operation":"add","a":"0","b":"0","result":"0"`},
 		{"scientific notation", `{"operation":"multiply","a":"1.5E+3","b":"2"}`, `{"id":1,"operation":"multiply","a":"1500","b":"2","result":"3000"`},
 	}
@@ -131,6 +144,33 @@ func TestCreateCalculationErrors(t *testing.T) {
 		{"operand has too many digits", `{"operation":"add","a":"` + strings.Repeat("9", calculator.Precision+1) + `","b":"2"}`, 400, codeInvalidRequest},
 		{"second operand is not a number", `{"operation":"add","a":"1","b":"1,5"}`, 400, codeInvalidRequest},
 		{"operand out of range", `{"operation":"add","a":"1e9999","b":"2"}`, 400, codeInvalidRequest},
+		{"JSON null", `null`, 400, codeInvalidRequest},
+		{"JSON string", `"add"`, 400, codeInvalidRequest},
+		{"unterminated object", `{"operation":"add","a":"1","b":"2"`, 400, codeInvalidRequest},
+		{"missing value", `{"operation":"add","a":,"b":"2"}`, 400, codeInvalidRequest},
+		{"mismatched closing bracket", `{"operation":"add","a":"1","b":"2"]`, 400, codeInvalidRequest},
+		{"duplicate field", `{"operation":"add","a":"1","a":"5","b":"2"}`, 400, codeInvalidRequest},
+		{"field in the wrong case", `{"operation":"add","A":"1","b":"2"}`, 400, codeInvalidRequest},
+		{"operation is a number", `{"operation":1,"a":"1","b":"2"}`, 400, codeInvalidRequest},
+		{"operand is an object", `{"operation":"add","a":{"value":"1"},"b":"2"}`, 400, codeInvalidRequest},
+		{"operand is a boolean", `{"operation":"add","a":true,"b":"2"}`, 400, codeInvalidRequest},
+		{"operand has surrounding spaces", `{"operation":"add","a":" 1 ","b":"2"}`, 400, codeInvalidRequest},
+		{"operand uses a decimal comma", `{"operation":"add","a":"1,5","b":"2"}`, 400, codeInvalidRequest},
+		{"operand uses thousands separators", `{"operation":"add","a":"1,000.00","b":"2"}`, 400, codeInvalidRequest},
+		{"operand uses non-ASCII digits", `{"operation":"add","a":"１２","b":"2"}`, 400, codeInvalidRequest},
+		{"operand is hexadecimal", `{"operation":"add","a":"0x10","b":"2"}`, 400, codeInvalidRequest},
+		{"operand is infinite", `{"operation":"add","a":"Infinity","b":"2"}`, 400, codeInvalidRequest},
+		{"operand below the supported range", `{"operation":"add","a":"1E-6144","b":"2"}`, 400, codeInvalidRequest},
+		{"b on a unary operation", `{"operation":"sqrt","a":"81","b":"7"}`, 400, codeInvalidRequest},
+		{"empty operation", `{"operation":"","a":"1","b":"2"}`, 400, codeInvalidRequest},
+		{"null operation", `{"operation":null,"a":"1","b":"2"}`, 400, codeInvalidRequest},
+		{"operation in the wrong case", `{"operation":"ADD","a":"1","b":"2"}`, 400, codeUnknownOperation},
+		{"operation with spaces", `{"operation":" add ","a":"1","b":"2"}`, 400, codeUnknownOperation},
+		{"result too close to zero", `{"operation":"divide","a":"1E-6143","b":"10"}`, 422, codeResultOutOfRange},
+		{"zero to the power of zero", `{"operation":"power","a":"0","b":"0"}`, 422, codeUndefinedResult},
+		{"division by zero written as 0.00", `{"operation":"divide","a":"1","b":"0.00"}`, 422, codeDivisionByZero},
+		{"division by negative zero", `{"operation":"divide","a":"1","b":"-0"}`, 422, codeDivisionByZero},
+		{"body too large, in trailing data", `{"operation":"add","a":"1","b":"2"}` + strings.Repeat(" ", maxBodyBytes), 413, codeRequestTooLarge},
 		{"missing operation", `{"a":"1","b":"2"}`, 400, codeInvalidRequest},
 		{"missing a", `{"operation":"add","b":"2"}`, 400, codeInvalidRequest},
 		{"null a", `{"operation":"add","a":null,"b":"2"}`, 400, codeInvalidRequest},
@@ -153,6 +193,44 @@ func TestCreateCalculationErrors(t *testing.T) {
 	// None of the failures above may have been recorded.
 	if got := decode[listResponse](t, do(t, h, http.MethodGet, "/api/v1/calculations", "")); len(got.Calculations) != 0 {
 		t.Errorf("history has %d records after only failed requests, want 0", len(got.Calculations))
+	}
+}
+
+func TestCreateCalculationRequiresJSONContentType(t *testing.T) {
+	const body = `{"operation":"add","a":"1","b":"2"}`
+	h := newTestRouter()
+
+	for _, contentType := range []string{"", "text/plain", "application/x-www-form-urlencoded", "multipart/form-data; boundary=x", "application/jsonx", "garbage;;"} {
+		rec := doWithContentType(t, h, http.MethodPost, "/api/v1/calculations", body, contentType)
+		wantError(t, rec, http.StatusUnsupportedMediaType, codeUnsupportedMedia)
+	}
+	for _, contentType := range []string{"application/json", "application/json; charset=utf-8", "Application/JSON"} {
+		rec := doWithContentType(t, h, http.MethodPost, "/api/v1/calculations", body, contentType)
+		if rec.Code != http.StatusCreated {
+			t.Errorf("Content-Type %q: status = %d, want 201", contentType, rec.Code)
+		}
+	}
+}
+
+// Error messages must tell the client what to fix.
+func TestCreateCalculationErrorMessages(t *testing.T) {
+	tests := []struct{ body, want string }{
+		{``, "must not be empty"},
+		{`{"operation":"add","a":"1","a":"5","b":"2"}`, `"a" appears more than once`},
+		{`{"operation":"add","a":"1","b":"2","c":"3"}`, `unknown field "c"`},
+		{`{"operation":"add","a":1,"b":"2"}`, `"a" must be a string`},
+		{`{"operation":"add","a":"1"}`, `"b" is required`},
+		{`{"operation":"sqrt","a":"1","b":"2"}`, `"b" is not allowed for operation "sqrt"`},
+		{`{"operation":"add","a":"abc","b":"2"}`, `"a" must be a decimal number`},
+		{`{"operation":"modulo","a":"1","b":"2"}`, `unknown operation "modulo"`},
+	}
+
+	h := newTestRouter()
+	for _, tt := range tests {
+		rec := do(t, h, http.MethodPost, "/api/v1/calculations", tt.body)
+		if got := decode[errorResponse](t, rec).Error.Message; !strings.Contains(got, tt.want) {
+			t.Errorf("body %s: message = %q, want it to contain %q", tt.body, got, tt.want)
+		}
 	}
 }
 
@@ -200,7 +278,10 @@ func TestListCalculations(t *testing.T) {
 
 	t.Run("rejects invalid query parameters", func(t *testing.T) {
 		h := newTestRouter()
-		for _, query := range []string{"limit=0", "limit=101", "limit=abc", "cursor=abc", "cursor=0", "cursor=-3"} {
+		for _, query := range []string{
+			"limit=0", "limit=-1", "limit=101", "limit=abc", "limit=1.5", "limit=99999999999999999999",
+			"cursor=abc", "cursor=0", "cursor=-3", "cursor=1.5", "cursor=99999999999999999999",
+		} {
 			wantError(t, do(t, h, http.MethodGet, "/api/v1/calculations?"+query, ""), 400, codeInvalidRequest)
 		}
 	})
@@ -218,8 +299,9 @@ func TestGetCalculation(t *testing.T) {
 		t.Errorf("record = %+v, want the second calculation", got)
 	}
 
-	wantError(t, do(t, h, http.MethodGet, "/api/v1/calculations/99", ""), 404, codeNotFound)
-	wantError(t, do(t, h, http.MethodGet, "/api/v1/calculations/abc", ""), 404, codeNotFound)
+	for _, id := range []string{"99", "0", "-1", "abc", "1.0", "99999999999999999999", "1%20"} {
+		wantError(t, do(t, h, http.MethodGet, "/api/v1/calculations/"+id, ""), 404, codeNotFound)
+	}
 }
 
 // brokenRepo simulates a storage outage.
@@ -249,6 +331,22 @@ func TestStorageFailuresAreHidden(t *testing.T) {
 		if strings.Contains(rec.Body.String(), "secret-path") || strings.Contains(rec.Body.String(), "refused") {
 			t.Errorf("%s %s leaked internal details: %s", r.method, r.path, rec.Body)
 		}
+	}
+}
+
+// panickingRepo simulates a bug deep inside a request.
+type panickingRepo struct{ brokenRepo }
+
+func (panickingRepo) List(context.Context, int, int64) ([]history.Record, error) {
+	panic("unexpected bug")
+}
+
+func TestPanicsBecomeInternalErrors(t *testing.T) {
+	rec := do(t, newRouterWith(panickingRepo{}, ""), http.MethodGet, "/api/v1/calculations", "")
+
+	wantError(t, rec, 500, codeInternal)
+	if strings.Contains(rec.Body.String(), "unexpected bug") {
+		t.Errorf("response leaked the panic value: %s", rec.Body)
 	}
 }
 
@@ -317,7 +415,13 @@ func TestAPIFallback(t *testing.T) {
 		{"DELETE on the collection", http.MethodDelete, "/api/v1/calculations", 405, codeUnsupportedMethod, "GET, POST"},
 		{"DELETE on a record", http.MethodDelete, "/api/v1/calculations/1", 405, codeUnsupportedMethod, "GET"},
 		{"POST on operations", http.MethodPost, "/api/v1/operations", 405, codeUnsupportedMethod, "GET"},
+		{"PUT on a record", http.MethodPut, "/api/v1/calculations/1", 405, codeUnsupportedMethod, "GET"},
+		{"PATCH on the collection", http.MethodPatch, "/api/v1/calculations", 405, codeUnsupportedMethod, "GET, POST"},
 		{"unknown endpoint", http.MethodGet, "/api/v1/nope", 404, codeNotFound, ""},
+		{"collection with a trailing slash", http.MethodGet, "/api/v1/calculations/", 404, codeNotFound, ""},
+		{"path below a record", http.MethodGet, "/api/v1/calculations/1/extra", 404, codeNotFound, ""},
+		{"POST below a record", http.MethodPost, "/api/v1/calculations/1/extra", 404, codeNotFound, ""},
+		{"API root", http.MethodGet, "/api/", 404, codeNotFound, ""},
 	}
 
 	h := newTestRouter()

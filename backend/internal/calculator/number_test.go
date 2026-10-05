@@ -23,6 +23,11 @@ func TestParse(t *testing.T) {
 		{"0.00000001", "1E-8"},
 		{"1E+40", "1E+40"},
 		{"1E-6143", "1E-6143"},
+		{"1." + strings.Repeat("0", 60), "1"},
+		{"1" + strings.Repeat("0", 40), "1E+40"},
+		{strings.Repeat("0", 60) + "7", "7"},
+		{"0E-7000", "0"},
+		{"0.000", "0"},
 		{strings.Repeat("9", Precision), strings.Repeat("9", Precision)},
 	}
 	for _, tt := range tests {
@@ -40,7 +45,8 @@ func TestParse(t *testing.T) {
 func TestParseRejectsInvalidInput(t *testing.T) {
 	inputs := []string{
 		"", " ", "abc", " 1", "1 ", "1,5", "1_000", "0x10", "1.2.3", "--1",
-		"NaN", "Infinity", "-inf",
+		"NaN", "Infinity", "-inf", "sNaN",
+		"１２", "٣", "1e", "e5", "1e+", "+", "-", ".", "1/2", "0b1", "1\x00", "$5", "5%",
 		strings.Repeat("9", Precision+1), // too many significant digits
 		"1E+6145",                        // too large
 		"1E-6144",                        // too small

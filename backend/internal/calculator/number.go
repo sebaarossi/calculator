@@ -26,6 +26,17 @@ var arithmetic = apd.Context{
 	Traps:       apd.DefaultTraps,
 }
 
+// exact is used for intermediate steps that must not round or overflow before
+// the final result is rounded once by arithmetic. The product of two operands
+// has at most 2*Precision digits and an exponent well inside apd's own limits.
+var exact = apd.Context{
+	Precision:   2 * Precision,
+	Rounding:    apd.RoundHalfEven,
+	MaxExponent: apd.MaxExponent,
+	MinExponent: apd.MinExponent,
+	Traps:       apd.DefaultTraps,
+}
+
 // Number is an immutable, exact decimal number. Unlike a float64 it represents
 // values such as 0.1 without error, so 0.1 + 0.2 is exactly 0.3.
 //
@@ -43,6 +54,8 @@ func Parse(text string) (Number, error) {
 	if err != nil || d.Form != apd.Finite {
 		return Number{}, ErrInvalidOperand
 	}
+	// Trailing zeros carry no information, so "1.000" has one significant digit.
+	d.Reduce(d)
 	digits := d.NumDigits()
 	magnitude := int64(d.Exponent) + digits - 1
 	if digits > Precision || magnitude > maxExponent || magnitude < minExponent {

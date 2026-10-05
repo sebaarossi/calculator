@@ -67,8 +67,9 @@ paths:
                 { id: 1, operation: add, a: '2', b: '3', result: '5', createdAt: '2026-10-05T21:30:00Z' }
         '400':
           description: >-
-            The request is malformed: invalid JSON, a missing or non-numeric
-            operand, an unknown field or an unknown operation
+            The request is malformed: invalid JSON, a missing, duplicated or
+            unknown field, an operand that is not a decimal string, a `b` on a
+            unary operation, or an unknown operation
             (`invalid_request`, `unknown_operation`).
           content:
             application/json:
@@ -77,7 +78,13 @@ paths:
               example:
                 error: { code: invalid_request, message: 'field "b" is required for operation "add"' }
         '413':
-          description: The request body is too large (`request_too_large`).
+          description: The request body is larger than 1 KB (`request_too_large`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '415':
+          description: '`Content-Type` is not `application/json` (`unsupported_media_type`).'
           content:
             application/json:
               schema:
@@ -205,7 +212,9 @@ components:
         b:
           allOf:
             - $ref: '#/components/schemas/Decimal'
-          description: Second operand. Required for every operation except `sqrt`, which ignores it.
+          description: >-
+            Second operand. Required for every operation except `sqrt`, which
+            takes one operand and rejects a `b`.
     Calculation:
       type: object
       required: [id, operation, a, result, createdAt]

@@ -67,9 +67,10 @@ var definitions = []definition{
 		return arithmetic.Sqrt(d, a)
 	}},
 	{Info{Percentage, 2, "a percent of b"}, func(d, a, b *apd.Decimal) (apd.Condition, error) {
-		if cond, err := arithmetic.Mul(d, a, b); err != nil {
-			return cond, err
-		}
+		// The product is computed exactly (it cannot round or overflow in the
+		// exact context), so only the final result is rounded and range-checked:
+		// 1E+6144 percent of 10 is a valid 1E+6143.
+		_, _ = exact.Mul(d, a, b)
 		return arithmetic.Quo(d, d, hundred)
 	}},
 }
@@ -121,7 +122,8 @@ func Calculate(op Operation, a, b Number) (Number, error) {
 	result := new(apd.Decimal)
 	cond, err := d.eval(result, a.decimal(), b.decimal())
 	switch {
-	case cond.Overflow() || cond.Underflow() || cond.SystemOverflow() || cond.SystemUnderflow():
+	case cond.Overflow() || cond.Underflow() || cond.Subnormal() || cond.SystemOverflow() || cond.SystemUnderflow():
+		// Too large, or too close to zero to keep full precision.
 		return Number{}, ErrOutOfRange
 	case err != nil || result.Form != apd.Finite:
 		return Number{}, ErrUndefinedResult

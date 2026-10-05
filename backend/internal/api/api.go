@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime"
 	"net/http"
 	"strconv"
 	"strings"
@@ -35,16 +36,32 @@ const (
 	codeNotFound          = "not_found"
 	codeInternal          = "internal_error"
 	codeRequestTooLarge   = "request_too_large"
+	codeUnsupportedMedia  = "unsupported_media_type"
 	codeUnsupportedMethod = "method_not_allowed"
 )
 
+// calculateRequest is the body of POST /api/v1/calculations as the client
+// sent it, before validation. Every field is a pointer so that a missing field
+// can be told apart from an empty one.
+//
+// Operands are decimal strings ("0.1"), never JSON numbers, so no client or
+// proxy can turn them into binary floating point on the way.
 type calculateRequest struct {
-	Operation string `json:"operation"`
-	// Operands are decimal strings ("0.1"), never JSON numbers, so no client or
-	// proxy can turn them into binary floating point on the way. Pointers
-	// distinguish an omitted operand from an explicit one.
-	A *string `json:"a"`
-	B *string `json:"b"`
+	Operation *string
+	A         *string
+	B         *string
+}
+
+// requestError is a problem with a request that should be reported to the
+// client as is.
+type requestError struct {
+	status  int
+	code    string
+	message string
+}
+
+func badRequest(format string, args ...any) *requestError {
+	return &requestError{http.StatusBadRequest, codeInvalidRequest, fmt.Sprintf(format, args...)}
 }
 
 type listResponse struct {
@@ -92,7 +109,7 @@ func NewRouter(logger *slog.Logger, service *history.Service, staticDir string) 
 		mux.Handle("/", http.FileServer(http.Dir(staticDir)))
 	}
 
-	return logRequests(logger, mux)
+	return logRequests(logger, recoverPanics(logger, mux))
 }
 
 func handleHealth(w http.ResponseWriter, _ *http.Request) {
@@ -105,63 +122,72 @@ func handleOperations(w http.ResponseWriter, _ *http.Request) {
 
 // createCalculation performs a calculation and adds it to the history.
 func (h *handler) createCalculation(w http.ResponseWriter, r *http.Request) {
-	var req calculateRequest
-	if err := decodeJSON(w, r, &req); err != nil {
-		var tooLarge *http.MaxBytesError
-		if errors.As(err, &tooLarge) {
-			writeError(w, http.StatusRequestEntityTooLarge, codeRequestTooLarge, "request body is too large")
-			return
-		}
-		writeError(w, http.StatusBadRequest, codeInvalidRequest, err.Error())
-		return
-	}
-
-	if req.Operation == "" {
-		writeError(w, http.StatusBadRequest, codeInvalidRequest, `field "operation" is required`)
-		return
-	}
-	op := calculator.Operation(req.Operation)
-	info, ok := calculator.Lookup(op)
-	if !ok {
-		writeError(w, http.StatusBadRequest, codeUnknownOperation,
-			fmt.Sprintf("unknown operation %q; see GET /api/v1/operations", req.Operation))
-		return
-	}
-	a, ok := parseOperand(w, "a", req.A)
-	if !ok {
-		return
-	}
-	var b calculator.Number
-	if info.Operands > 1 {
-		if b, ok = parseOperand(w, "b", req.B); !ok {
-			return
-		}
-	}
-
-	record, err := h.history.Calculate(r.Context(), op, a, b)
+	req, err := readCalculateRequest(w, r)
 	if err != nil {
-		h.writeDomainError(w, err)
+		writeRequestError(w, err)
+		return
+	}
+	op, a, b, err := req.validate()
+	if err != nil {
+		writeRequestError(w, err)
+		return
+	}
+
+	record, calcErr := h.history.Calculate(r.Context(), op, a, b)
+	if calcErr != nil {
+		h.writeDomainError(w, calcErr)
 		return
 	}
 	w.Header().Set("Location", fmt.Sprintf("/api/v1/calculations/%d", record.ID))
 	writeJSON(w, http.StatusCreated, record)
 }
 
-// parseOperand reads a required decimal operand, writing the error response
-// and returning false if it is missing or not a valid number.
-func parseOperand(w http.ResponseWriter, field string, value *string) (calculator.Number, bool) {
+// validate applies every rule a calculation request must satisfy and returns
+// the operation with its parsed operands:
+//
+//   - operation is required and must be a supported one;
+//   - a is required;
+//   - b is required for binary operations and not allowed for unary ones, so a
+//     client can never believe an operand was used when it was ignored;
+//   - operands must be finite decimal numbers within the supported precision.
+func (req calculateRequest) validate() (op calculator.Operation, a, b calculator.Number, err *requestError) {
+	if req.Operation == nil || *req.Operation == "" {
+		return "", a, b, badRequest(`field "operation" is required`)
+	}
+	op = calculator.Operation(*req.Operation)
+	info, ok := calculator.Lookup(op)
+	if !ok {
+		return "", a, b, &requestError{http.StatusBadRequest, codeUnknownOperation,
+			fmt.Sprintf("unknown operation %q; see GET /api/v1/operations", *req.Operation)}
+	}
+
+	if a, err = parseOperand("a", req.A); err != nil {
+		return "", a, b, err
+	}
+	if info.Operands == 1 {
+		if req.B != nil {
+			return "", a, b, badRequest(`field "b" is not allowed for operation %q, which takes one operand`, op)
+		}
+		return op, a, b, nil
+	}
+	if b, err = parseOperand("b", req.B); err != nil {
+		return "", a, b, err
+	}
+	return op, a, b, nil
+}
+
+// parseOperand reads a required decimal operand.
+func parseOperand(field string, value *string) (calculator.Number, *requestError) {
 	if value == nil {
-		writeError(w, http.StatusBadRequest, codeInvalidRequest, fmt.Sprintf("field %q is required", field))
-		return calculator.Number{}, false
+		return calculator.Number{}, badRequest("field %q is required", field)
 	}
 	number, err := calculator.Parse(*value)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, codeInvalidRequest, fmt.Sprintf(
+		return calculator.Number{}, badRequest(
 			`field %q must be a decimal number with at most %d significant digits, such as "12.5"`,
-			field, calculator.Precision))
-		return calculator.Number{}, false
+			field, calculator.Precision)
 	}
-	return number, true
+	return number, nil
 }
 
 // listCalculations returns one page of the history, newest first.
@@ -231,15 +257,26 @@ func (h *handler) writeDomainError(w http.ResponseWriter, err error) {
 // handleAPIFallback keeps error responses JSON for anything under /api/ that
 // did not match a route, instead of the mux's plain-text defaults.
 func handleAPIFallback(w http.ResponseWriter, r *http.Request) {
-	path := r.URL.Path
-	switch {
+	// Reached only when no route matched. If the path is a real endpoint the
+	// method must be the problem; anything else does not exist.
+	allowed := ""
+	switch path := r.URL.Path; {
 	case path == "/api/v1/calculations":
-		methodNotAllowed(w, "GET, POST")
-	case strings.HasPrefix(path, "/api/v1/calculations/"), path == "/api/v1/operations":
-		methodNotAllowed(w, "GET")
-	default:
-		writeError(w, http.StatusNotFound, codeNotFound, "no such endpoint")
+		allowed = "GET, POST"
+	case path == "/api/v1/operations", isCalculationPath(path):
+		allowed = "GET"
 	}
+	if allowed == "" || r.Method == http.MethodGet {
+		writeError(w, http.StatusNotFound, codeNotFound, "no such endpoint")
+		return
+	}
+	methodNotAllowed(w, allowed)
+}
+
+// isCalculationPath reports whether path has the shape /api/v1/calculations/{id}.
+func isCalculationPath(path string) bool {
+	id, found := strings.CutPrefix(path, "/api/v1/calculations/")
+	return found && id != "" && !strings.Contains(id, "/")
 }
 
 func methodNotAllowed(w http.ResponseWriter, allowed string) {
@@ -271,30 +308,77 @@ func classify(err error) (status int, code string) {
 	}
 }
 
-// decodeJSON reads a single JSON object from the request body into dst,
-// returning errors whose messages are safe to show to API clients.
-func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) error {
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
-	dec.DisallowUnknownFields()
+// readCalculateRequest reads the request body strictly. Unlike encoding/json's
+// default behaviour it rejects duplicate keys, keys in the wrong case and
+// unknown keys: when a body is ambiguous, two systems can disagree about what
+// it means, and a financial API must not guess.
+func readCalculateRequest(w http.ResponseWriter, r *http.Request) (calculateRequest, *requestError) {
+	var req calculateRequest
 
-	if err := dec.Decode(dst); err != nil {
-		var typeErr *json.UnmarshalTypeError
-		var tooLarge *http.MaxBytesError
+	mediaType, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if mediaType != "application/json" {
+		return req, &requestError{http.StatusUnsupportedMediaType, codeUnsupportedMedia,
+			"Content-Type must be application/json"}
+	}
+
+	fields := map[string]**string{"operation": &req.Operation, "a": &req.A, "b": &req.B}
+	seen := map[string]bool{}
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
+
+	if token, err := dec.Token(); err != nil || token != json.Delim('{') {
+		if errors.Is(err, io.EOF) {
+			return req, badRequest("request body must not be empty")
+		}
+		return req, malformedBody(err)
+	}
+	for dec.More() {
+		token, err := dec.Token()
+		if err != nil {
+			return req, malformedBody(err)
+		}
+		key, _ := token.(string) // object keys are always strings
+		field, known := fields[key]
 		switch {
-		case errors.As(err, &tooLarge):
-			return err
-		case errors.As(err, &typeErr) && typeErr.Field != "":
-			return fmt.Errorf("field %q must be a string", typeErr.Field)
-		case errors.Is(err, io.EOF):
-			return errors.New("request body must not be empty")
-		default:
-			return errors.New(`request body must be a JSON object such as {"operation": "add", "a": "1", "b": "2"}`)
+		case !known:
+			return req, badRequest("unknown field %q; expected operation, a and b", key)
+		case seen[key]:
+			return req, badRequest("field %q appears more than once", key)
+		}
+		seen[key] = true
+
+		if err := dec.Decode(field); err != nil {
+			var typeErr *json.UnmarshalTypeError
+			if errors.As(err, &typeErr) {
+				return req, badRequest(`field %q must be a string, such as "12.5"`, key)
+			}
+			return req, malformedBody(err)
 		}
 	}
-	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
-		return errors.New("request body must contain a single JSON object")
+	if _, err := dec.Token(); err != nil { // the closing brace
+		return req, malformedBody(err)
 	}
-	return nil
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			return req, malformedBody(err)
+		}
+		return req, badRequest("request body must contain a single JSON object")
+	}
+	return req, nil
+}
+
+// malformedBody explains why a body could not be read as a JSON object.
+func malformedBody(err error) *requestError {
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		return &requestError{http.StatusRequestEntityTooLarge, codeRequestTooLarge,
+			fmt.Sprintf("request body must not exceed %d bytes", maxBodyBytes)}
+	}
+	return badRequest(`request body must be a JSON object such as {"operation": "add", "a": "1", "b": "2"}`)
+}
+
+func writeRequestError(w http.ResponseWriter, err *requestError) {
+	writeError(w, err.status, err.code, err.message)
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {

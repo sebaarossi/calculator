@@ -43,6 +43,13 @@ func TestCalculate(t *testing.T) {
 		{"percentage over one hundred", Percentage, "150", "80", "120"},
 		{"percentage of one", Percentage, "50", "1", "0.5"},
 		{"percentage is exact", Percentage, "7.5", "19.99", "1.49925"},
+		{"percentage near the upper limit", Percentage, "1E+6144", "10", "1E+6143"},
+		{"percentage rounds only once", Percentage, "3333333333333333333333333333333333", "3333333333333333333333333333333333", "1.111111111111111111111111111111111E+65"},
+		{"largest representable number", Add, "9.999999999999999999999999999999999E+6144", "0", "9.999999999999999999999999999999999E+6144"},
+		{"smallest representable number", Divide, "1E-6142", "10", "1E-6143"},
+		{"negative zero is zero", Multiply, "-5", "0", "0"},
+		{"sqrt of negative zero", Sqrt, "-0", "0", "0"},
+		{"power of a perfect square", Power, "1.21", "0.5", "1.1"},
 		{"large results use scientific notation", Power, "10", "40", "1E+40"},
 	}
 
@@ -94,6 +101,10 @@ func TestCalculateErrors(t *testing.T) {
 		{"underflow on power", Power, "10", "-7000", ErrOutOfRange},
 		{"underflow on divide", Divide, "1E-6143", "1E+100", ErrOutOfRange},
 		{"overflow on percentage", Percentage, "1E+6144", "1E+6144", ErrOutOfRange},
+		{"overflow on add", Add, "9.999999999999999999999999999999999E+6144", "9.999999999999999999999999999999999E+6144", ErrOutOfRange},
+		{"result just below the smallest number", Divide, "1E-6143", "10", ErrOutOfRange},
+		{"underflow on percentage", Percentage, "1E-6143", "1", ErrOutOfRange},
+		{"underflow on multiply", Multiply, "1E-6143", "1E-6143", ErrOutOfRange},
 	}
 
 	for _, tt := range tests {
