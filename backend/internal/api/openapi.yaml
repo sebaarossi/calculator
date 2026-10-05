@@ -1,0 +1,160 @@
+openapi: 3.0.3
+info:
+  title: Calculator API
+  version: 1.0.0
+  description: |
+    Arithmetic operations over JSON.
+
+    Malformed requests return **400**. Well-formed requests that have no valid
+    mathematical answer (for example dividing by zero) return **422**. Every
+    error has the same shape, with a stable machine-readable `code`.
+servers:
+  - url: /
+paths:
+  /api/v1/calculate:
+    post:
+      summary: Perform a calculation
+      operationId: calculate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalculateRequest'
+            examples:
+              add:
+                summary: Addition
+                value: { operation: add, a: 2, b: 3 }
+              divide:
+                summary: Division
+                value: { operation: divide, a: 9, b: 2 }
+              power:
+                summary: Exponentiation
+                value: { operation: power, a: 2, b: 10 }
+              sqrt:
+                summary: Square root (unary, no b)
+                value: { operation: sqrt, a: 81 }
+              percentage:
+                summary: 20 percent of 150
+                value: { operation: percentage, a: 20, b: 150 }
+              divisionByZero:
+                summary: Division by zero (returns 422)
+                value: { operation: divide, a: 1, b: 0 }
+      responses:
+        '200':
+          description: The calculation result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalculateResponse'
+              example: { operation: add, a: 2, b: 3, result: 5 }
+        '400':
+          description: >-
+            The request is malformed: invalid JSON, a missing or non-numeric
+            operand, an unknown field or an unknown operation
+            (`invalid_request`, `unknown_operation`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: { code: invalid_request, message: 'field "b" is required for operation "add"' }
+        '413':
+          description: The request body is too large (`request_too_large`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          description: >-
+            The calculation has no valid result (`division_by_zero`,
+            `negative_square_root`, `undefined_result`, `result_out_of_range`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: { code: division_by_zero, message: division by zero }
+  /api/v1/operations:
+    get:
+      summary: List the supported operations
+      operationId: listOperations
+      responses:
+        '200':
+          description: The supported operations
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [operations]
+                properties:
+                  operations:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/OperationInfo'
+  /healthz:
+    get:
+      summary: Health check
+      operationId: health
+      responses:
+        '200':
+          description: The service is up
+          content:
+            application/json:
+              example: { status: ok }
+components:
+  schemas:
+    Operation:
+      type: string
+      enum: [add, subtract, multiply, divide, power, sqrt, percentage]
+    CalculateRequest:
+      type: object
+      required: [operation, a]
+      additionalProperties: false
+      properties:
+        operation:
+          $ref: '#/components/schemas/Operation'
+        a:
+          type: number
+          description: First operand.
+        b:
+          type: number
+          description: Second operand. Required for every operation except `sqrt`, which ignores it.
+    CalculateResponse:
+      type: object
+      required: [operation, a, result]
+      properties:
+        operation:
+          $ref: '#/components/schemas/Operation'
+        a:
+          type: number
+        b:
+          type: number
+          description: Omitted for unary operations.
+        result:
+          type: number
+    OperationInfo:
+      type: object
+      required: [name, operands, description]
+      properties:
+        name:
+          $ref: '#/components/schemas/Operation'
+        operands:
+          type: integer
+          description: How many operands the operation takes (1 or 2).
+        description:
+          type: string
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: Stable, machine-readable identifier.
+            message:
+              type: string
+              description: Human-readable explanation; may change.
