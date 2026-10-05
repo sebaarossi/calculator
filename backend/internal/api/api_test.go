@@ -449,9 +449,13 @@ func TestStaticFiles(t *testing.T) {
 		}
 	})
 
-	t.Run("not served by default", func(t *testing.T) {
-		if rec := do(t, newTestRouter(), http.MethodGet, "/", ""); rec.Code != http.StatusNotFound {
-			t.Errorf("GET / = %d, want 404", rec.Code)
+	t.Run("without them, the root redirects to the docs", func(t *testing.T) {
+		rec := do(t, newTestRouter(), http.MethodGet, "/", "")
+		if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/docs" {
+			t.Errorf("GET / = %d to %q, want a 302 to /docs", rec.Code, rec.Header().Get("Location"))
+		}
+		if rec := do(t, newTestRouter(), http.MethodGet, "/nope", ""); rec.Code != http.StatusNotFound {
+			t.Errorf("GET /nope = %d, want 404", rec.Code)
 		}
 	})
 }

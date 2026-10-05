@@ -91,7 +91,8 @@ type handler struct {
 // NewRouter builds the HTTP handler for the service.
 //
 // If staticDir is non-empty, files in it are served at "/" so a single binary
-// can host both the API and the built frontend.
+// can host both the API and the built frontend. Otherwise "/" redirects to the
+// API documentation.
 func NewRouter(logger *slog.Logger, service *history.Service, staticDir string) http.Handler {
 	h := &handler{history: service, logger: logger}
 	mux := http.NewServeMux()
@@ -107,6 +108,10 @@ func NewRouter(logger *slog.Logger, service *history.Service, staticDir string) 
 
 	if staticDir != "" {
 		mux.Handle("/", http.FileServer(http.Dir(staticDir)))
+	} else {
+		// Running as an API only: point a visitor to the root at the docs
+		// instead of showing a bare 404.
+		mux.Handle("GET /{$}", http.RedirectHandler("/docs", http.StatusFound))
 	}
 
 	return logRequests(logger, recoverPanics(logger, mux))
