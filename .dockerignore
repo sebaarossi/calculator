@@ -1,0 +1,9 @@
+.git
+.github
+.claude
+**/node_modules
+**/dist
+**/coverage
+**/coverage.out
+**/coverage.html
+docs

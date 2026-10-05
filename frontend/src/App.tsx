@@ -3,8 +3,8 @@ import { Calculator } from './components/Calculator';
 import { PaymentPlanner } from './components/PaymentPlanner';
 
 const TABS = [
-  { id: 'calculator', label: 'Calculator' },
-  { id: 'planner', label: 'Split payments' },
+  { id: 'calculator', label: 'Normal Mode' },
+  { id: 'planner', label: 'Sezzle Mode' },
 ] as const;
 
 type TabId = (typeof TABS)[number]['id'];
