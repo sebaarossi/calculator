@@ -1,0 +1,319 @@
+/*
+ * Visual style: bold flat colours, thick outlines and hard offset shadows.
+ * Keys sit on their shadow and physically "press down" when used.
+ */
+:root {
+  --ink: #1a1a1a;
+  --page: #f1ecff;
+  --page-dots: #d9cfff;
+  --page-text: #1a1a1a;
+  --body: #ffd23f;
+  --paper: #fffdf5;
+  --screen: #1a1a1a;
+  --screen-text: #9effc5;
+  --screen-muted: #6fbf93;
+  --key-digit: #fffdf5;
+  --key-function: #8be9fd;
+  --key-operator: #ff7eb6;
+  --key-equals: #7c5cff;
+  --error: #ff9b8a;
+  --focus: #7c5cff;
+
+  --outline: 3px solid var(--ink);
+  --depth: 4px;
+
+  font-family: ui-rounded, 'SF Pro Rounded', 'Nunito', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  color: var(--page-text);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --page: #17132b;
+    --page-dots: #2c2550;
+    --page-text: #f1ecff;
+    --focus: #ffffff;
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100dvh;
+  background-color: var(--page);
+  background-image: radial-gradient(var(--page-dots) 2px, transparent 2px);
+  background-size: 24px 24px;
+}
+
+button {
+  font: inherit;
+  color: var(--ink);
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+button:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 3px;
+}
+
+.app {
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1.5rem;
+  padding: 1.5rem 1rem;
+}
+
+.app__title {
+  margin: 0;
+  padding: 0.25rem 0.875rem;
+  border: var(--outline);
+  border-radius: 0.5rem;
+  background: var(--key-operator);
+  box-shadow: var(--depth) var(--depth) 0 var(--ink);
+  color: var(--ink);
+  font-size: 1.25rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  transform: rotate(-3deg);
+}
+
+.app__hint {
+  margin: 0;
+  font-size: 0.8125rem;
+  text-align: center;
+  opacity: 0.75;
+}
+
+kbd {
+  font: inherit;
+  padding: 0 0.3em;
+  border: 1px solid currentcolor;
+  border-radius: 4px;
+}
+
+.machine {
+  width: 100%;
+  max-width: 22rem;
+}
+
+/* The tape feeds out of the top of the calculator, tucked behind its edge. */
+.tape {
+  width: 78%;
+  margin: 0 auto -3px;
+  padding: 0.75rem 0.75rem 0.625rem;
+  border: var(--outline);
+  border-radius: 0.375rem 0.375rem 0 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 0.875rem;
+}
+
+.tape__empty {
+  margin: 0;
+  text-align: center;
+  opacity: 0.6;
+}
+
+.tape__lines {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tape__line {
+  display: flex;
+  /* A long calculation puts its result on a line of its own. */
+  flex-wrap: wrap;
+  gap: 0 0.75rem;
+  width: 100%;
+  padding: 0.1875rem 0.375rem;
+  border: 0;
+  border-radius: 0.25rem;
+  background: none;
+  text-align: left;
+  overflow-wrap: anywhere;
+  animation: print 180ms ease-out;
+}
+
+.tape__line:hover {
+  background: var(--body);
+}
+
+.tape__line strong {
+  margin-left: auto;
+  text-align: right;
+}
+
+.tape__lines li + li {
+  border-top: 1px dashed color-mix(in srgb, var(--ink) 30%, transparent);
+}
+
+@keyframes print {
+  from {
+    opacity: 0;
+    transform: translateY(0.5rem);
+  }
+}
+
+.calculator {
+  position: relative;
+  padding: 1rem;
+  border: var(--outline);
+  border-radius: 1.25rem;
+  background: var(--body);
+  box-shadow: 8px 8px 0 var(--ink);
+}
+
+.calculator[aria-busy='true'] .keypad {
+  cursor: progress;
+}
+
+.display {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  min-height: 6.5rem;
+  margin-bottom: 1rem;
+  padding: 0.75rem 1rem;
+  border: var(--outline);
+  border-radius: 0.75rem;
+  background: var(--screen);
+  color: var(--screen-text);
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  text-align: right;
+}
+
+.display__expression {
+  min-height: 1.25rem;
+  font-size: 0.9375rem;
+  color: var(--screen-muted);
+  overflow-wrap: anywhere;
+}
+
+.display__value {
+  display: block;
+  font-size: 2.25rem;
+  font-weight: 600;
+  line-height: 1.2;
+  overflow-x: auto;
+  white-space: nowrap;
+  scrollbar-width: none;
+}
+
+.display__value--small {
+  font-size: 1.375rem;
+  line-height: 1.96;
+}
+
+/* Long enough to need two lines, e.g. a result with all 34 digits. */
+.display__value--tiny {
+  font-size: 1rem;
+  line-height: 1.35;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.display__value--error {
+  font-size: 1.0625rem;
+  line-height: 1.4;
+  white-space: normal;
+  color: var(--error);
+  animation: shake 300ms;
+}
+
+@keyframes shake {
+  25% {
+    transform: translateX(-6px);
+  }
+
+  75% {
+    transform: translateX(6px);
+  }
+}
+
+.keypad {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0.625rem;
+  /* Room for the key shadows, so the grid stays visually centred. */
+  padding: 0 var(--depth) var(--depth) 0;
+}
+
+.key {
+  min-height: 3.5rem;
+  border: var(--outline);
+  border-radius: 0.75rem;
+  background: var(--key-digit);
+  box-shadow: var(--depth) var(--depth) 0 var(--ink);
+  font-size: 1.25rem;
+  font-weight: 700;
+  transition:
+    transform 60ms,
+    box-shadow 60ms;
+}
+
+.key:hover {
+  filter: brightness(1.06);
+}
+
+/* Pressed keys travel onto their shadow; the chosen operator stays down. */
+.key:active,
+.key--active {
+  transform: translate(var(--depth), var(--depth));
+  box-shadow: 0 0 0 var(--ink);
+}
+
+.key--function {
+  background: var(--key-function);
+}
+
+.key--operator {
+  background: var(--key-operator);
+}
+
+.key--equals {
+  grid-row: span 2;
+  background: var(--key-equals);
+  color: #ffffff;
+}
+
+.key--wide {
+  grid-column: span 2;
+}
+
+@media (max-width: 24rem) {
+  .calculator {
+    padding: 0.75rem;
+    box-shadow: 6px 6px 0 var(--ink);
+  }
+
+  .key {
+    min-height: 3.25rem;
+  }
+}
+
+/* Keyboard shortcuts are of no use on a touch screen. */
+@media (hover: none) {
+  .app__hint {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .key,
+  .tape__line,
+  .display__value--error {
+    transition: none;
+    animation: none;
+  }
+}
