@@ -17,6 +17,7 @@ import (
 
 	"github.com/sebaarossi/calculator/backend/internal/calculator"
 	"github.com/sebaarossi/calculator/backend/internal/history"
+	"github.com/sebaarossi/calculator/backend/internal/paymentplan"
 	"github.com/sebaarossi/calculator/backend/internal/storage/memory"
 )
 
@@ -234,6 +235,98 @@ func TestCreateCalculationErrorMessages(t *testing.T) {
 	}
 }
 
+func TestCreatePaymentPlan(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			"pay in 4",
+			`{"plan":"pay_in_4","amount":"99.99","purchaseDate":"2026-10-05"}`,
+			`{"plan":"pay_in_4","amount":"99.99","currency":"USD","interest":"0.00","intervalDays":14,"installments":[` +
+				`{"number":1,"dueDate":"2026-10-05","amount":"25.02"},` +
+				`{"number":2,"dueDate":"2026-10-19","amount":"24.99"},` +
+				`{"number":3,"dueDate":"2026-11-02","amount":"24.99"},` +
+				`{"number":4,"dueDate":"2026-11-16","amount":"24.99"}]}`,
+		},
+		{
+			"pay in 2, whole dollars",
+			`{"plan":"pay_in_2","amount":"50","purchaseDate":"2026-12-25"}`,
+			`{"plan":"pay_in_2","amount":"50.00","currency":"USD","interest":"0.00","intervalDays":14,"installments":[` +
+				`{"number":1,"dueDate":"2026-12-25","amount":"25.00"},` +
+				`{"number":2,"dueDate":"2027-01-08","amount":"25.00"}]}`,
+		},
+	}
+
+	h := newTestRouter()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := do(t, h, http.MethodPost, "/api/v1/payment-plans", tt.body)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body)
+			}
+			if got := strings.TrimSpace(rec.Body.String()); got != tt.want {
+				t.Errorf("body = %s\nwant   %s", got, tt.want)
+			}
+		})
+	}
+
+	// A plan is a computation, not a calculation to be recorded.
+	if got := decode[listResponse](t, do(t, h, http.MethodGet, "/api/v1/calculations", "")); len(got.Calculations) != 0 {
+		t.Errorf("history has %d records after building payment plans, want 0", len(got.Calculations))
+	}
+}
+
+func TestCreatePaymentPlanErrors(t *testing.T) {
+	plan := func(fields string) string { return "{" + fields + "}" }
+	const valid = `"plan":"pay_in_4","amount":"100","purchaseDate":"2026-10-05"`
+
+	tests := []struct {
+		name        string
+		body        string
+		wantStatus  int
+		wantCode    string
+		wantMessage string
+	}{
+		{"empty body", ``, 400, codeInvalidRequest, "must not be empty"},
+		{"malformed JSON", `{"plan":`, 400, codeInvalidRequest, "valid JSON object"},
+		{"unknown field", plan(valid + `,"apr":"0"`), 400, codeInvalidRequest, `unknown field "apr"`},
+		{"duplicate field", plan(valid + `,"amount":"1"`), 400, codeInvalidRequest, `"amount" appears more than once`},
+		{"missing plan", plan(`"amount":"100","purchaseDate":"2026-10-05"`), 400, codeInvalidRequest, `"plan" is required`},
+		{"missing amount", plan(`"plan":"pay_in_4","purchaseDate":"2026-10-05"`), 400, codeInvalidRequest, `"amount" is required`},
+		{"missing date", plan(`"plan":"pay_in_4","amount":"100"`), 400, codeInvalidRequest, `"purchaseDate" is required`},
+		{"amount as a JSON number", plan(`"plan":"pay_in_4","amount":100,"purchaseDate":"2026-10-05"`), 400, codeInvalidRequest, `"amount" must be a string`},
+		{"negative amount", plan(`"plan":"pay_in_4","amount":"-100","purchaseDate":"2026-10-05"`), 400, codeInvalidRequest, "at most two decimals"},
+		{"fraction of a cent", plan(`"plan":"pay_in_4","amount":"10.005","purchaseDate":"2026-10-05"`), 400, codeInvalidRequest, "at most two decimals"},
+		{"thousands separator", plan(`"plan":"pay_in_4","amount":"1,000.00","purchaseDate":"2026-10-05"`), 400, codeInvalidRequest, "at most two decimals"},
+		{"amount is not a number", plan(`"plan":"pay_in_4","amount":"lots","purchaseDate":"2026-10-05"`), 400, codeInvalidRequest, "at most two decimals"},
+		{"impossible date", plan(`"plan":"pay_in_4","amount":"100","purchaseDate":"2026-02-30"`), 400, codeInvalidRequest, "calendar date"},
+		{"date with a time", plan(`"plan":"pay_in_4","amount":"100","purchaseDate":"2026-10-05T10:00:00Z"`), 400, codeInvalidRequest, "calendar date"},
+		{"date in another format", plan(`"plan":"pay_in_4","amount":"100","purchaseDate":"05/10/2026"`), 400, codeInvalidRequest, "calendar date"},
+		{"unknown plan", plan(`"plan":"pay_in_3","amount":"100","purchaseDate":"2026-10-05"`), 400, codeUnknownPlan, `"pay_in_3"`},
+		{"amount of zero", plan(`"plan":"pay_in_4","amount":"0","purchaseDate":"2026-10-05"`), 422, codeAmountOutOfRange, "too small"},
+		{"fewer cents than installments", plan(`"plan":"pay_in_4","amount":"0.03","purchaseDate":"2026-10-05"`), 422, codeAmountOutOfRange, "too small"},
+		{"amount over the maximum", plan(`"plan":"pay_in_4","amount":"1000000.01","purchaseDate":"2026-10-05"`), 422, codeAmountOutOfRange, "must not exceed"},
+	}
+
+	h := newTestRouter()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := do(t, h, http.MethodPost, "/api/v1/payment-plans", tt.body)
+			wantError(t, rec, tt.wantStatus, tt.wantCode)
+			if got := decode[errorResponse](t, rec).Error.Message; !strings.Contains(got, tt.wantMessage) {
+				t.Errorf("message = %q, want it to contain %q", got, tt.wantMessage)
+			}
+		})
+	}
+
+	t.Run("requires a JSON content type", func(t *testing.T) {
+		rec := doWithContentType(t, h, http.MethodPost, "/api/v1/payment-plans", plan(valid), "text/plain")
+		wantError(t, rec, http.StatusUnsupportedMediaType, codeUnsupportedMedia)
+	})
+}
+
 func TestListCalculations(t *testing.T) {
 	t.Run("an empty history is an empty array", func(t *testing.T) {
 		rec := do(t, newTestRouter(), http.MethodGet, "/api/v1/calculations", "")
@@ -385,7 +478,7 @@ func TestDocs(t *testing.T) {
 				t.Errorf("spec does not mention operation %q", info.Name)
 			}
 		}
-		for _, path := range []string{"/api/v1/calculations:", "/api/v1/calculations/{id}:", "/api/v1/operations:", "/healthz:"} {
+		for _, path := range []string{"/api/v1/calculations:", "/api/v1/calculations/{id}:", "/api/v1/payment-plans:", "/api/v1/operations:", "/healthz:"} {
 			if !strings.Contains(spec, path) {
 				t.Errorf("spec does not document %s", path)
 			}
@@ -417,6 +510,8 @@ func TestAPIFallback(t *testing.T) {
 		{"POST on operations", http.MethodPost, "/api/v1/operations", 405, codeUnsupportedMethod, "GET"},
 		{"PUT on a record", http.MethodPut, "/api/v1/calculations/1", 405, codeUnsupportedMethod, "GET"},
 		{"PATCH on the collection", http.MethodPatch, "/api/v1/calculations", 405, codeUnsupportedMethod, "GET, POST"},
+		{"GET on payment plans", http.MethodGet, "/api/v1/payment-plans", 405, codeUnsupportedMethod, "POST"},
+		{"path below payment plans", http.MethodPost, "/api/v1/payment-plans/1", 404, codeNotFound, ""},
 		{"unknown endpoint", http.MethodGet, "/api/v1/nope", 404, codeNotFound, ""},
 		{"collection with a trailing slash", http.MethodGet, "/api/v1/calculations/", 404, codeNotFound, ""},
 		{"path below a record", http.MethodGet, "/api/v1/calculations/1/extra", 404, codeNotFound, ""},
@@ -473,6 +568,9 @@ func TestClassify(t *testing.T) {
 		{calculator.ErrUndefinedResult, 422, codeUndefinedResult},
 		{calculator.ErrOutOfRange, 422, codeResultOutOfRange},
 		{history.ErrNotFound, 404, codeNotFound},
+		{paymentplan.ErrUnknownPlan, 400, codeUnknownPlan},
+		{paymentplan.ErrAmountTooSmall, 422, codeAmountOutOfRange},
+		{paymentplan.ErrAmountTooLarge, 422, codeAmountOutOfRange},
 		{errors.New("boom"), 500, codeInternal},
 	}
 

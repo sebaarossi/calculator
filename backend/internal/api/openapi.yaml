@@ -161,6 +161,63 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+  /api/v1/payment-plans:
+    post:
+      summary: Split a purchase into interest-free installments
+      description: |
+        Models "buy now, pay later" plans: the first installment is charged at
+        checkout and the rest follow every 14 days, with no interest.
+
+        The installments always add up to exactly the amount. When it does not
+        divide evenly, the leftover cents go on the first installment, so the
+        payments still to come are all equal. Nothing is stored.
+      operationId: createPaymentPlan
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PaymentPlanRequest'
+            examples:
+              payIn4:
+                summary: Pay in 4
+                value: { plan: pay_in_4, amount: '99.99', purchaseDate: '2026-10-05' }
+              payIn2:
+                summary: Pay in 2
+                value: { plan: pay_in_2, amount: '50', purchaseDate: '2026-10-05' }
+              payIn5:
+                summary: Pay in 5
+                value: { plan: pay_in_5, amount: '250.00', purchaseDate: '2026-10-05' }
+      responses:
+        '200':
+          description: The payment schedule
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentPlan'
+        '400':
+          description: >-
+            The request is malformed: a missing field, an amount that is not
+            dollars with at most two decimals, a date that is not `YYYY-MM-DD`
+            (`invalid_request`), or an unknown plan (`unknown_plan`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '415':
+          description: '`Content-Type` is not `application/json` (`unsupported_media_type`).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          description: >-
+            The amount cannot be split: it has fewer cents than the plan has
+            installments, or it exceeds 1,000,000.00 (`amount_out_of_range`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /api/v1/operations:
     get:
       summary: List the supported operations
@@ -234,6 +291,57 @@ components:
         createdAt:
           type: string
           format: date-time
+    Money:
+      type: string
+      description: An amount in US dollars, as a string with at most two decimals. Responses always use two.
+      example: '99.99'
+    PaymentPlanRequest:
+      type: object
+      required: [plan, amount, purchaseDate]
+      additionalProperties: false
+      properties:
+        plan:
+          type: string
+          enum: [pay_in_2, pay_in_4, pay_in_5]
+        amount:
+          $ref: '#/components/schemas/Money'
+        purchaseDate:
+          type: string
+          format: date
+          description: The day of the purchase, when the first installment is charged.
+    PaymentPlan:
+      type: object
+      required: [plan, amount, currency, interest, intervalDays, installments]
+      properties:
+        plan:
+          type: string
+          enum: [pay_in_2, pay_in_4, pay_in_5]
+        amount:
+          $ref: '#/components/schemas/Money'
+        currency:
+          type: string
+          example: USD
+        interest:
+          allOf:
+            - $ref: '#/components/schemas/Money'
+          description: Always 0.00; these plans are interest-free.
+        intervalDays:
+          type: integer
+          example: 14
+        installments:
+          type: array
+          items:
+            type: object
+            required: [number, dueDate, amount]
+            properties:
+              number:
+                type: integer
+                description: 1 is the installment charged at checkout.
+              dueDate:
+                type: string
+                format: date
+              amount:
+                $ref: '#/components/schemas/Money'
     OperationInfo:
       type: object
       required: [name, operands, description]

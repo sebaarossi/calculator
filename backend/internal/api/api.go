@@ -14,6 +14,7 @@ import (
 
 	"github.com/sebaarossi/calculator/backend/internal/calculator"
 	"github.com/sebaarossi/calculator/backend/internal/history"
+	"github.com/sebaarossi/calculator/backend/internal/paymentplan"
 )
 
 const (
@@ -33,6 +34,8 @@ const (
 	codeNegativeSqrt      = "negative_square_root"
 	codeUndefinedResult   = "undefined_result"
 	codeResultOutOfRange  = "result_out_of_range"
+	codeUnknownPlan       = "unknown_plan"
+	codeAmountOutOfRange  = "amount_out_of_range"
 	codeNotFound          = "not_found"
 	codeInternal          = "internal_error"
 	codeRequestTooLarge   = "request_too_large"
@@ -102,6 +105,7 @@ func NewRouter(logger *slog.Logger, service *history.Service, staticDir string) 
 	mux.HandleFunc("POST /api/v1/calculations", h.createCalculation)
 	mux.HandleFunc("GET /api/v1/calculations", h.listCalculations)
 	mux.HandleFunc("GET /api/v1/calculations/{id}", h.getCalculation)
+	mux.HandleFunc("POST /api/v1/payment-plans", h.createPaymentPlan)
 	mux.HandleFunc("GET /api/v1/openapi.yaml", handleOpenAPISpec)
 	mux.HandleFunc("GET /docs", handleSwaggerUI)
 	mux.HandleFunc("/api/", handleAPIFallback)
@@ -195,6 +199,60 @@ func parseOperand(field string, value *string) (calculator.Number, *requestError
 	return number, nil
 }
 
+// paymentPlanRequest is the body of POST /api/v1/payment-plans before validation.
+type paymentPlanRequest struct {
+	Plan         *string
+	Amount       *string
+	PurchaseDate *string
+}
+
+// createPaymentPlan splits a purchase into installments. Nothing is stored:
+// the same request always produces the same schedule.
+func (h *handler) createPaymentPlan(w http.ResponseWriter, r *http.Request) {
+	var req paymentPlanRequest
+	fields := map[string]**string{"plan": &req.Plan, "amount": &req.Amount, "purchaseDate": &req.PurchaseDate}
+	if err := readObject(w, r, fields); err != nil {
+		writeRequestError(w, err)
+		return
+	}
+	plan, amount, purchase, err := req.validate()
+	if err != nil {
+		writeRequestError(w, err)
+		return
+	}
+
+	schedule, buildErr := paymentplan.Build(plan, amount, purchase)
+	if buildErr != nil {
+		h.writeDomainError(w, buildErr)
+		return
+	}
+	writeJSON(w, http.StatusOK, schedule)
+}
+
+// validate checks that every field is present and well formed. Whether the
+// amount can actually be split is a business rule and is left to the domain.
+func (req paymentPlanRequest) validate() (paymentplan.Plan, paymentplan.Money, paymentplan.Date, *requestError) {
+	var noDate paymentplan.Date
+	if req.Plan == nil || *req.Plan == "" {
+		return "", 0, noDate, badRequest(`field "plan" is required`)
+	}
+	if req.Amount == nil {
+		return "", 0, noDate, badRequest(`field "amount" is required`)
+	}
+	if req.PurchaseDate == nil {
+		return "", 0, noDate, badRequest(`field "purchaseDate" is required`)
+	}
+	amount, err := paymentplan.ParseMoney(*req.Amount)
+	if err != nil {
+		return "", 0, noDate, badRequest(`field "amount": %v`, err)
+	}
+	purchase, err := paymentplan.ParseDate(*req.PurchaseDate)
+	if err != nil {
+		return "", 0, noDate, badRequest(`field "purchaseDate": %v`, err)
+	}
+	return paymentplan.Plan(*req.Plan), amount, purchase, nil
+}
+
 // listCalculations returns one page of the history, newest first.
 func (h *handler) listCalculations(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
@@ -270,8 +328,10 @@ func handleAPIFallback(w http.ResponseWriter, r *http.Request) {
 		allowed = "GET, POST"
 	case path == "/api/v1/operations", isCalculationPath(path):
 		allowed = "GET"
+	case path == "/api/v1/payment-plans":
+		allowed = "POST"
 	}
-	if allowed == "" || r.Method == http.MethodGet {
+	if allowed == "" || strings.Contains(allowed, r.Method) {
 		writeError(w, http.StatusNotFound, codeNotFound, "no such endpoint")
 		return
 	}
@@ -308,68 +368,75 @@ func classify(err error) (status int, code string) {
 		return http.StatusUnprocessableEntity, codeResultOutOfRange
 	case errors.Is(err, history.ErrNotFound):
 		return http.StatusNotFound, codeNotFound
+	case errors.Is(err, paymentplan.ErrUnknownPlan):
+		return http.StatusBadRequest, codeUnknownPlan
+	case errors.Is(err, paymentplan.ErrAmountTooSmall), errors.Is(err, paymentplan.ErrAmountTooLarge):
+		return http.StatusUnprocessableEntity, codeAmountOutOfRange
 	default:
 		return http.StatusInternalServerError, codeInternal
 	}
 }
 
-// readCalculateRequest reads the request body strictly. Unlike encoding/json's
-// default behaviour it rejects duplicate keys, keys in the wrong case and
-// unknown keys: when a body is ambiguous, two systems can disagree about what
-// it means, and a financial API must not guess.
 func readCalculateRequest(w http.ResponseWriter, r *http.Request) (calculateRequest, *requestError) {
 	var req calculateRequest
+	err := readObject(w, r, map[string]**string{"operation": &req.Operation, "a": &req.A, "b": &req.B})
+	return req, err
+}
 
+// readObject reads a JSON object whose values are all strings into the given
+// fields. Unlike encoding/json's default behaviour it rejects duplicate keys,
+// keys in the wrong case and unknown keys: when a body is ambiguous, two
+// systems can disagree about what it means, and a financial API must not guess.
+func readObject(w http.ResponseWriter, r *http.Request, fields map[string]**string) *requestError {
 	mediaType, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if mediaType != "application/json" {
-		return req, &requestError{http.StatusUnsupportedMediaType, codeUnsupportedMedia,
+		return &requestError{http.StatusUnsupportedMediaType, codeUnsupportedMedia,
 			"Content-Type must be application/json"}
 	}
 
-	fields := map[string]**string{"operation": &req.Operation, "a": &req.A, "b": &req.B}
 	seen := map[string]bool{}
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
 
 	if token, err := dec.Token(); err != nil || token != json.Delim('{') {
 		if errors.Is(err, io.EOF) {
-			return req, badRequest("request body must not be empty")
+			return badRequest("request body must not be empty")
 		}
-		return req, malformedBody(err)
+		return malformedBody(err)
 	}
 	for dec.More() {
 		token, err := dec.Token()
 		if err != nil {
-			return req, malformedBody(err)
+			return malformedBody(err)
 		}
 		key, _ := token.(string) // object keys are always strings
 		field, known := fields[key]
 		switch {
 		case !known:
-			return req, badRequest("unknown field %q; expected operation, a and b", key)
+			return badRequest("unknown field %q", key)
 		case seen[key]:
-			return req, badRequest("field %q appears more than once", key)
+			return badRequest("field %q appears more than once", key)
 		}
 		seen[key] = true
 
 		if err := dec.Decode(field); err != nil {
 			var typeErr *json.UnmarshalTypeError
 			if errors.As(err, &typeErr) {
-				return req, badRequest(`field %q must be a string, such as "12.5"`, key)
+				return badRequest("field %q must be a string", key)
 			}
-			return req, malformedBody(err)
+			return malformedBody(err)
 		}
 	}
 	if _, err := dec.Token(); err != nil { // the closing brace
-		return req, malformedBody(err)
+		return malformedBody(err)
 	}
 	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) {
-			return req, malformedBody(err)
+			return malformedBody(err)
 		}
-		return req, badRequest("request body must contain a single JSON object")
+		return badRequest("request body must contain a single JSON object")
 	}
-	return req, nil
+	return nil
 }
 
 // malformedBody explains why a body could not be read as a JSON object.
@@ -379,7 +446,7 @@ func malformedBody(err error) *requestError {
 		return &requestError{http.StatusRequestEntityTooLarge, codeRequestTooLarge,
 			fmt.Sprintf("request body must not exceed %d bytes", maxBodyBytes)}
 	}
-	return badRequest(`request body must be a JSON object such as {"operation": "add", "a": "1", "b": "2"}`)
+	return badRequest("request body must be a valid JSON object")
 }
 
 func writeRequestError(w http.ResponseWriter, err *requestError) {
