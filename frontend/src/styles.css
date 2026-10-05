@@ -302,6 +302,209 @@ kbd {
   }
 }
 
+/* Tabs: two chunky buttons; the selected one stays pressed, like an operator key. */
+.tabs {
+  display: flex;
+  gap: 0.625rem;
+}
+
+.tabs__tab {
+  padding: 0.5rem 1rem;
+  border: var(--outline);
+  border-radius: 0.75rem;
+  background: var(--paper);
+  box-shadow: var(--depth) var(--depth) 0 var(--ink);
+  font-weight: 700;
+  transition:
+    transform 60ms,
+    box-shadow 60ms;
+}
+
+.tabs__tab[aria-selected='true'] {
+  background: var(--key-function);
+  transform: translate(var(--depth), var(--depth));
+  box-shadow: 0 0 0 var(--ink);
+}
+
+.app__tool {
+  display: flex;
+  justify-content: center;
+  width: 100%;
+}
+
+/* Payment planner: the same machine in another colour, printing downwards. */
+.planner {
+  position: relative;
+  display: grid;
+  gap: 0.875rem;
+  padding: 1rem;
+  border: var(--outline);
+  border-radius: 1.25rem;
+  background: var(--screen-text);
+  box-shadow: 8px 8px 0 var(--ink);
+  color: var(--ink);
+}
+
+.planner__plans {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.planner__plans legend,
+.planner__field label {
+  margin-bottom: 0.25rem;
+  padding: 0;
+  font-size: 0.8125rem;
+  font-weight: 700;
+}
+
+.planner__plan input {
+  position: absolute;
+  opacity: 0;
+}
+
+.planner__plan span {
+  display: block;
+  padding: 0.625rem 0.25rem;
+  border: var(--outline);
+  border-radius: 0.75rem;
+  background: var(--paper);
+  box-shadow: var(--depth) var(--depth) 0 var(--ink);
+  font-weight: 700;
+  text-align: center;
+  cursor: pointer;
+  transition:
+    transform 60ms,
+    box-shadow 60ms;
+}
+
+.planner__plan input:checked + span {
+  background: var(--body);
+  transform: translate(var(--depth), var(--depth));
+  box-shadow: 0 0 0 var(--ink);
+}
+
+.planner__plan input:focus-visible + span {
+  outline: 3px solid var(--focus);
+  outline-offset: 3px;
+}
+
+.planner__field {
+  display: grid;
+}
+
+.planner__field input,
+.planner__money {
+  width: 100%;
+  min-height: 3rem;
+  border: var(--outline);
+  border-radius: 0.75rem;
+  background: var(--paper);
+  color: var(--ink);
+  font: inherit;
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 1.125rem;
+}
+
+.planner__field > input {
+  padding: 0 0.75rem;
+}
+
+.planner__money {
+  display: flex;
+  align-items: center;
+  padding-left: 0.75rem;
+  font-weight: 600;
+}
+
+.planner__money input {
+  min-height: 0;
+  padding: 0 0.75rem 0 0.375rem;
+  border: 0;
+  background: none;
+  outline: none;
+}
+
+.planner__money:focus-within,
+.planner__field > input:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.planner__error {
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  border: var(--outline);
+  border-radius: 0.75rem;
+  background: var(--key-operator);
+  font-size: 0.9375rem;
+  font-weight: 600;
+  animation: shake 300ms;
+}
+
+.planner__submit {
+  color: #ffffff;
+  margin: 0 var(--depth) var(--depth) 0;
+}
+
+.receipt {
+  width: 86%;
+  margin: -3px auto 0;
+  padding: 0.875rem 0.875rem 0.75rem;
+  border: var(--outline);
+  border-radius: 0 0 0.375rem 0.375rem;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 0.875rem;
+  animation: print 220ms ease-out;
+}
+
+.receipt__title {
+  display: flex;
+  justify-content: space-between;
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+}
+
+.receipt__lines {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.receipt__line {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.375rem 0;
+  border-top: 1px dashed color-mix(in srgb, var(--ink) 30%, transparent);
+}
+
+.receipt__line small {
+  display: block;
+  opacity: 0.7;
+}
+
+.receipt__line:first-child strong {
+  padding: 0.0625rem 0.375rem;
+  border-radius: 0.25rem;
+  background: var(--body);
+}
+
+.receipt__footer {
+  margin: 0.25rem 0 0;
+  padding-top: 0.5rem;
+  border-top: 2px solid var(--ink);
+  font-size: 0.75rem;
+  text-align: center;
+}
+
 /* Keyboard shortcuts are of no use on a touch screen. */
 @media (hover: none) {
   .app__hint {
@@ -311,6 +514,10 @@ kbd {
 
 @media (prefers-reduced-motion: reduce) {
   .key,
+  .tabs__tab,
+  .planner__plan span,
+  .planner__error,
+  .receipt,
   .tape__line,
   .display__value--error {
     transition: none;
