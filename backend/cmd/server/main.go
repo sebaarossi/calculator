@@ -17,7 +17,12 @@ import (
 	"time"
 
 	"github.com/sebaarossi/calculator/backend/internal/api"
+	"github.com/sebaarossi/calculator/backend/internal/history"
+	"github.com/sebaarossi/calculator/backend/internal/storage/memory"
 )
+
+// historyCapacity bounds the in-memory history; older calculations are discarded.
+const historyCapacity = 1000
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
@@ -27,9 +32,12 @@ func main() {
 		port = "8080"
 	}
 
+	// The only place that knows which storage is in use.
+	service := history.NewService(memory.New(historyCapacity))
+
 	srv := &http.Server{
 		Addr:              ":" + port,
-		Handler:           api.NewRouter(logger, os.Getenv("STATIC_DIR")),
+		Handler:           api.NewRouter(logger, service, os.Getenv("STATIC_DIR")),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      10 * time.Second,

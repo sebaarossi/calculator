@@ -3,7 +3,14 @@ info:
   title: Calculator API
   version: 1.0.0
   description: |
-    Arithmetic operations over JSON.
+    Arithmetic operations over JSON, with an append-only history of every
+    calculation performed. The history is kept in memory and is lost when the
+    service restarts.
+
+    **Decimal arithmetic.** Calculations use exact decimal arithmetic, not binary
+    floating point: `0.1 + 0.2` is exactly `0.3`. Results are rounded to 34
+    significant digits (IEEE 754 decimal128) using half-even rounding. Numbers
+    are sent and returned as strings.
 
     Malformed requests return **400**. Well-formed requests that have no valid
     mathematical answer (for example dividing by zero) return **422**. Every
@@ -11,43 +18,53 @@ info:
 servers:
   - url: /
 paths:
-  /api/v1/calculate:
+  /api/v1/calculations:
     post:
-      summary: Perform a calculation
-      operationId: calculate
+      summary: Perform a calculation and record it
+      description: Failed calculations are not recorded.
+      operationId: createCalculation
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/CalculateRequest'
+              $ref: '#/components/schemas/CalculationRequest'
             examples:
               add:
                 summary: Addition
-                value: { operation: add, a: 2, b: 3 }
+                value: { operation: add, a: '2', b: '3' }
+              exact:
+                summary: Exact decimals (0.1 + 0.2 = 0.3)
+                value: { operation: add, a: '0.1', b: '0.2' }
               divide:
                 summary: Division
-                value: { operation: divide, a: 9, b: 2 }
+                value: { operation: divide, a: '9', b: '2' }
               power:
                 summary: Exponentiation
-                value: { operation: power, a: 2, b: 10 }
+                value: { operation: power, a: '2', b: '10' }
               sqrt:
                 summary: Square root (unary, no b)
-                value: { operation: sqrt, a: 81 }
+                value: { operation: sqrt, a: '81' }
               percentage:
                 summary: 20 percent of 150
-                value: { operation: percentage, a: 20, b: 150 }
+                value: { operation: percentage, a: '20', b: '150' }
               divisionByZero:
                 summary: Division by zero (returns 422)
-                value: { operation: divide, a: 1, b: 0 }
+                value: { operation: divide, a: '1', b: '0' }
       responses:
-        '200':
-          description: The calculation result
+        '201':
+          description: The recorded calculation
+          headers:
+            Location:
+              description: URL of the new calculation
+              schema:
+                type: string
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/CalculateResponse'
-              example: { operation: add, a: 2, b: 3, result: 5 }
+                $ref: '#/components/schemas/Calculation'
+              example:
+                { id: 1, operation: add, a: '2', b: '3', result: '5', createdAt: '2026-10-05T21:30:00Z' }
         '400':
           description: >-
             The request is malformed: invalid JSON, a missing or non-numeric
@@ -75,6 +92,68 @@ paths:
                 $ref: '#/components/schemas/Error'
               example:
                 error: { code: division_by_zero, message: division by zero }
+    get:
+      summary: List the calculation history, newest first
+      operationId: listCalculations
+      parameters:
+        - name: limit
+          in: query
+          description: Page size.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: cursor
+          in: query
+          description: The `nextCursor` of the previous page. Omit for the first page.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: One page of the history
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [calculations]
+                properties:
+                  calculations:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Calculation'
+                  nextCursor:
+                    type: string
+                    description: Present only when there are older calculations to fetch.
+        '400':
+          description: '`limit` or `cursor` is not valid (`invalid_request`).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/calculations/{id}:
+    get:
+      summary: Get one recorded calculation
+      operationId: getCalculation
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: The calculation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Calculation'
+        '404':
+          description: No calculation has that ID (`not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /api/v1/operations:
     get:
       summary: List the supported operations
@@ -107,7 +186,14 @@ components:
     Operation:
       type: string
       enum: [add, subtract, multiply, divide, power, sqrt, percentage]
-    CalculateRequest:
+    Decimal:
+      type: string
+      description: >-
+        A decimal number sent as a string, such as "12.5", "-0.01" or "1.5E+3",
+        with at most 34 significant digits. Strings are used instead of JSON
+        numbers so that no client parses a value as binary floating point.
+      example: '12.5'
+    CalculationRequest:
       type: object
       required: [operation, a]
       additionalProperties: false
@@ -115,24 +201,30 @@ components:
         operation:
           $ref: '#/components/schemas/Operation'
         a:
-          type: number
-          description: First operand.
+          $ref: '#/components/schemas/Decimal'
         b:
-          type: number
+          allOf:
+            - $ref: '#/components/schemas/Decimal'
           description: Second operand. Required for every operation except `sqrt`, which ignores it.
-    CalculateResponse:
+    Calculation:
       type: object
-      required: [operation, a, result]
+      required: [id, operation, a, result, createdAt]
       properties:
+        id:
+          type: integer
         operation:
           $ref: '#/components/schemas/Operation'
         a:
-          type: number
+          $ref: '#/components/schemas/Decimal'
         b:
-          type: number
+          allOf:
+            - $ref: '#/components/schemas/Decimal'
           description: Omitted for unary operations.
         result:
-          type: number
+          $ref: '#/components/schemas/Decimal'
+        createdAt:
+          type: string
+          format: date-time
     OperationInfo:
       type: object
       required: [name, operands, description]
